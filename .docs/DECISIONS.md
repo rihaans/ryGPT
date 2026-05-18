@@ -55,6 +55,13 @@ Lightweight ADR-style log. Each entry: *what was decided, why, what alternatives
 
 ## Decided
 
+### ADR-009 — Class imbalance across relationships (decided 2026-05-18)
+**Decision:** Train on the full dataset as-is. No downsampling, no stratification, no per-relationship loss weighting. Accept that ~97% of messages are from the Fay chat (`<gf>`).
+
+**Why:** The user's intended primary use of the model is gf-style generation. Equalizing relationships would dilute the target style. Per-relationship eval numbers will show `<gf>` strongest; that's intentional bias, not a failure.
+
+**Forces re-decision:** if Phase 7 shows `<friend>` / `<group>` perplexity is *worse than the untuned base* (i.e. negative transfer from gf-dominant data), revisit.
+
 ### ADR-005 — Custom tokenizer extension threshold
 **Decision:** Extend base vocab only if custom BPE compresses Manglish ≥ 1.5× better than base tokenizer.
 
