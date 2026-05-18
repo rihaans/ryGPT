@@ -1,0 +1,50 @@
+# --- Personal data: NEVER commit. ---
+data/raw/
+data/parsed/
+data/anonymized/
+data/processed/
+data/**/name_mapping.json
+models/
+*.zip
+*_chat.txt
+
+# --- Eval outputs that may contain generations or samples ---
+# These are gitignored by default; un-ignore individual files after manual PII review.
+eval/*
+!eval/.gitkeep
+!eval/README.md
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.eggs/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# --- W&B / training logs ---
+wandb/
+runs/
+lightning_logs/
+*.ckpt
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# --- Claude Code (local config) ---
+.claude/
