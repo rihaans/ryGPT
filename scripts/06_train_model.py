@@ -1,14 +1,23 @@
-"""Phase 6 — QLoRA fine-tuning on rented GPU.
+"""Phase 6 — QLoRA fine-tuning of a small base model on the Manglish corpus.
 
-Reads:  data/processed/{train,val}.jsonl, models/tokenizer/ (optional)
-Writes: models/lora_adapter/, W&B logs
+Run this on a rented GPU box (RunPod / Lambda / Vast.ai) — bitsandbytes is
+Linux+CUDA-only. Local CPU/Windows is not supported.
 
-Run on the GPU box, not local Windows:
+Setup on the GPU box:
+    pip install torch --index-url https://download.pytorch.org/whl/cu121
+    pip install -r requirements.txt
+    pip install bitsandbytes
+
+Reads:  data/processed/{train,val}.jsonl, data/anonymized/name_mapping.json
+Writes: models/lora_adapter/ (HF format), models/lora_adapter/training_config.json
+
+Run:
     python scripts/06_train_model.py --base-model Qwen/Qwen2.5-1.5B
 """
 import _bootstrap  # noqa: F401
 
 import argparse
+import json
 from pathlib import Path
 
 
@@ -17,19 +26,226 @@ def main() -> None:
     parser.add_argument("--base-model", type=str, default="Qwen/Qwen2.5-1.5B")
     parser.add_argument("--train-file", type=Path, default=Path("data/processed/train.jsonl"))
     parser.add_argument("--val-file", type=Path, default=Path("data/processed/val.jsonl"))
+    parser.add_argument("--name-mapping", type=Path,
+                        default=Path("data/anonymized/name_mapping.json"))
     parser.add_argument("--out-dir", type=Path, default=Path("models/lora_adapter"))
+    parser.add_argument("--max-seq-length", type=int, default=1024)
+
+    # LoRA
     parser.add_argument("--lora-rank", type=int, default=16)
     parser.add_argument("--lora-alpha", type=int, default=32)
     parser.add_argument("--lora-dropout", type=float, default=0.05)
+
+    # Optimization
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--grad-accum", type=int, default=4)
-    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--epochs", type=float, default=3.0)
+    parser.add_argument("--warmup-ratio", type=float, default=0.03)
+    parser.add_argument("--weight-decay", type=float, default=0.0)
+    parser.add_argument("--max-grad-norm", type=float, default=1.0)
+
+    # Eval / save / log
+    parser.add_argument("--eval-steps", type=int, default=500)
+    parser.add_argument("--save-steps", type=int, default=500)
+    parser.add_argument("--logging-steps", type=int, default=50)
+    parser.add_argument("--early-stopping-patience", type=int, default=3)
+
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--wandb-project", type=str, default="ryGPT")
+    parser.add_argument("--wandb-disabled", action="store_true")
     args = parser.parse_args()
 
-    raise NotImplementedError("Phase 6 implementation pending.")
+    # Imports are local so the script remains importable without GPU deps installed.
+    try:
+        import torch
+        from datasets import Dataset
+        from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+        from transformers import (
+            AutoModelForCausalLM,
+            AutoTokenizer,
+            BitsAndBytesConfig,
+            DataCollatorForLanguageModeling,
+            EarlyStoppingCallback,
+            Trainer,
+            TrainingArguments,
+        )
+    except ImportError as e:
+        raise SystemExit(
+            f"Missing GPU training deps ({e.name}). On the training box run:\n"
+            "  pip install torch --index-url https://download.pytorch.org/whl/cu121\n"
+            "  pip install -r requirements.txt\n"
+            "  pip install bitsandbytes\n"
+        )
+
+    from src.dataset import example_to_chat_messages, read_jsonl
+
+    # ---- Tokenizer ----
+    print(f"Loading tokenizer: {args.base_model}")
+    tokenizer = AutoTokenizer.from_pretrained(args.base_model, use_fast=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # Always add the project's special tokens as added_tokens (atomic).
+    # Per ADR-005 we skip full vocab extension; this is the lighter version.
+    specials = ["<self>", "<gf>", "<friend>", "<group>",
+                "[media]", "[phone]", "[email]", "[upi]", "[number]", "[link]"]
+    if args.name_mapping.exists():
+        with args.name_mapping.open(encoding="utf-8") as f:
+            mapping = json.load(f)
+        specials += [t for t in mapping if t.startswith("<person_") and t not in specials]
+    n_added = tokenizer.add_special_tokens({"additional_special_tokens": specials})
+    print(f"  added {n_added} special tokens: {specials}")
+
+    # ---- Model ----
+    print(f"Loading base model in 4-bit: {args.base_model}")
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_use_double_quant=True,
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        args.base_model,
+        quantization_config=bnb_config,
+        device_map="auto",
+        trust_remote_code=False,
+    )
+    if n_added > 0:
+        model.resize_token_embeddings(len(tokenizer))
+    model = prepare_model_for_kbit_training(model)
+
+    # ---- LoRA ----
+    peft_config = LoraConfig(
+        r=args.lora_rank,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
+        bias="none",
+        task_type="CAUSAL_LM",
+        target_modules=[
+            "q_proj", "k_proj", "v_proj", "o_proj",
+            "gate_proj", "up_proj", "down_proj",
+        ],
+    )
+    model = get_peft_model(model, peft_config)
+    model.print_trainable_parameters()
+
+    # ---- Data ----
+    print(f"Loading training data from {args.train_file}")
+    train_examples = read_jsonl(args.train_file)
+    val_examples = read_jsonl(args.val_file)
+    print(f"  train={len(train_examples):,}  val={len(val_examples):,}")
+
+    def tokenize_one(example: dict) -> dict:
+        messages = example_to_chat_messages(example)
+        # Full sequence (everything we want to encode).
+        full_text = tokenizer.apply_chat_template(messages, tokenize=False)
+        full_ids = tokenizer(
+            full_text, truncation=True, max_length=args.max_seq_length,
+            add_special_tokens=False,
+        )["input_ids"]
+
+        # Prefix is everything except the final assistant turn, plus the
+        # generation prompt that signals "model speaks next".
+        prefix_messages = messages[:-1]
+        prefix_text = tokenizer.apply_chat_template(
+            prefix_messages, tokenize=False, add_generation_prompt=True,
+        )
+        prefix_ids = tokenizer(
+            prefix_text, truncation=True, max_length=args.max_seq_length,
+            add_special_tokens=False,
+        )["input_ids"]
+
+        labels = [-100] * len(prefix_ids) + full_ids[len(prefix_ids):]
+        # Defensive: if truncation broke alignment, just drop this example
+        # (we'll filter empty-labels rows below).
+        if len(labels) != len(full_ids):
+            labels = [-100] * len(full_ids)
+        return {
+            "input_ids": full_ids,
+            "labels": labels,
+            "attention_mask": [1] * len(full_ids),
+        }
+
+    train_ds = Dataset.from_list(train_examples).map(
+        tokenize_one, remove_columns=Dataset.from_list(train_examples).column_names,
+        desc="Tokenizing train",
+    )
+    val_ds = Dataset.from_list(val_examples).map(
+        tokenize_one, remove_columns=Dataset.from_list(val_examples).column_names,
+        desc="Tokenizing val",
+    )
+    # Drop rows where all labels are -100 (truncation killed the target).
+    train_ds = train_ds.filter(lambda r: any(l != -100 for l in r["labels"]))
+    val_ds = val_ds.filter(lambda r: any(l != -100 for l in r["labels"]))
+    print(f"  after filter: train={len(train_ds):,}  val={len(val_ds):,}")
+
+    # ---- Trainer ----
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    report_to = "wandb" if not args.wandb_disabled else "none"
+    training_args = TrainingArguments(
+        output_dir=str(args.out_dir),
+        num_train_epochs=args.epochs,
+        per_device_train_batch_size=args.batch_size,
+        per_device_eval_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.grad_accum,
+        learning_rate=args.lr,
+        weight_decay=args.weight_decay,
+        warmup_ratio=args.warmup_ratio,
+        max_grad_norm=args.max_grad_norm,
+        lr_scheduler_type="cosine",
+        bf16=True,
+        logging_steps=args.logging_steps,
+        eval_strategy="steps",
+        eval_steps=args.eval_steps,
+        save_strategy="steps",
+        save_steps=args.save_steps,
+        save_total_limit=2,
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_loss",
+        greater_is_better=False,
+        seed=args.seed,
+        gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+        report_to=report_to,
+        run_name=f"qlora-{args.base_model.split('/')[-1]}",
+    )
+
+    data_collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizer, mlm=False,
+    )
+    callbacks = [EarlyStoppingCallback(early_stopping_patience=args.early_stopping_patience)]
+
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_ds,
+        eval_dataset=val_ds,
+        data_collator=data_collator,
+        callbacks=callbacks,
+    )
+
+    # Persist training config for the eval phase to read back.
+    with (args.out_dir / "training_config.json").open("w", encoding="utf-8") as f:
+        json.dump({
+            "base_model": args.base_model,
+            "lora_rank": args.lora_rank,
+            "lora_alpha": args.lora_alpha,
+            "lora_dropout": args.lora_dropout,
+            "lr": args.lr,
+            "batch_size": args.batch_size,
+            "grad_accum": args.grad_accum,
+            "epochs": args.epochs,
+            "max_seq_length": args.max_seq_length,
+            "added_special_tokens": specials,
+            "seed": args.seed,
+        }, f, indent=2)
+
+    print("\nStarting training …")
+    trainer.train()
+    trainer.save_model(str(args.out_dir))
+    tokenizer.save_pretrained(args.out_dir)
+    print(f"\nSaved adapter + tokenizer to {args.out_dir}")
 
 
 if __name__ == "__main__":
