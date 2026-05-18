@@ -129,7 +129,7 @@ def build_mapping_from_speakers(
         if m:
             max_idx = max(max_idx, int(m.group(1)))
 
-    for sp in sorted(set(speakers), key=str.lower):
+    for sp in sorted(set(speakers), key=lambda s: (s.lower(), s)):
         if sp.lower() == self_name.lower():
             continue
         if sp.lower() in known:
@@ -228,4 +228,6 @@ def collect_speakers(parsed_files: Iterable[Path]) -> list[str]:
         with p.open(encoding="utf-8") as f:
             for msg in json.load(f):
                 seen.add(msg["speaker"])
-    return sorted(seen, key=str.lower)
+    # Composite key: primary case-insensitive, secondary exact-string for deterministic
+    # tie-breaking (otherwise set iteration order makes the result hash-dependent).
+    return sorted(seen, key=lambda s: (s.lower(), s))
