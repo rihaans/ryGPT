@@ -96,13 +96,11 @@ def main() -> None:
     base = AutoModelForCausalLM.from_pretrained(
         args.base_model, torch_dtype=torch.bfloat16, device_map="auto",
     )
-    base.resize_token_embeddings(len(tokenizer))
 
     print("Loading base model (separate copy) for adapter attach …")
     base_for_lora = AutoModelForCausalLM.from_pretrained(
         args.base_model, torch_dtype=torch.bfloat16, device_map="auto",
     )
-    base_for_lora.resize_token_embeddings(len(tokenizer))
     tuned = PeftModel.from_pretrained(base_for_lora, args.adapter_dir)
     tuned.eval()
     base.eval()

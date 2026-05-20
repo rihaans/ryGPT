@@ -30,6 +30,11 @@ def main() -> None:
                         default=Path("data/anonymized/name_mapping.json"))
     parser.add_argument("--out-dir", type=Path, default=Path("models/lora_adapter"))
     parser.add_argument("--max-seq-length", type=int, default=1024)
+    parser.add_argument("--max-train-examples", type=int, default=0,
+                        help="Cap on training examples (0 = use all). Use a small "
+                             "value (e.g. 1000) for a smoke test on a small GPU.")
+    parser.add_argument("--max-val-examples", type=int, default=0,
+                        help="Cap on validation examples (0 = use all).")
 
     # LoRA
     parser.add_argument("--lora-rank", type=int, default=16)
@@ -81,21 +86,18 @@ def main() -> None:
     from src.dataset import example_to_chat_messages, read_jsonl
 
     # ---- Tokenizer ----
+    # We deliberately do NOT add <self> / <person_N> / <gf> / [media] etc. as
+    # atomic special tokens. The base Qwen2.5 BPE already tokenizes them as
+    # short multi-piece sequences (`<self>` → 3 tokens, `<person_N>` → 5).
+    # Adding new tokens requires resizing the embedding + lm_head, and unless
+    # we explicitly train those layers (which roughly doubles VRAM cost), the
+    # new rows stay randomly initialized and the model emits garbage in their
+    # positions — observed empirically as Thai script appearing at every
+    # speaker prefix in the first smoke run.
     print(f"Loading tokenizer: {args.base_model}")
     tokenizer = AutoTokenizer.from_pretrained(args.base_model, use_fast=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-
-    # Always add the project's special tokens as added_tokens (atomic).
-    # Per ADR-005 we skip full vocab extension; this is the lighter version.
-    specials = ["<self>", "<gf>", "<friend>", "<group>",
-                "[media]", "[phone]", "[email]", "[upi]", "[number]", "[link]"]
-    if args.name_mapping.exists():
-        with args.name_mapping.open(encoding="utf-8") as f:
-            mapping = json.load(f)
-        specials += [t for t in mapping if t.startswith("<person_") and t not in specials]
-    n_added = tokenizer.add_special_tokens({"additional_special_tokens": specials})
-    print(f"  added {n_added} special tokens: {specials}")
 
     # ---- Model ----
     print(f"Loading base model in 4-bit: {args.base_model}")
@@ -111,8 +113,6 @@ def main() -> None:
         device_map="auto",
         trust_remote_code=False,
     )
-    if n_added > 0:
-        model.resize_token_embeddings(len(tokenizer))
     model = prepare_model_for_kbit_training(model)
 
     # ---- LoRA ----
@@ -135,6 +135,16 @@ def main() -> None:
     train_examples = read_jsonl(args.train_file)
     val_examples = read_jsonl(args.val_file)
     print(f"  train={len(train_examples):,}  val={len(val_examples):,}")
+    if args.max_train_examples > 0 and args.max_train_examples < len(train_examples):
+        import random
+        rng = random.Random(args.seed)
+        train_examples = rng.sample(train_examples, args.max_train_examples)
+        print(f"  --max-train-examples: subsampled to {len(train_examples):,}")
+    if args.max_val_examples > 0 and args.max_val_examples < len(val_examples):
+        import random
+        rng = random.Random(args.seed)
+        val_examples = rng.sample(val_examples, args.max_val_examples)
+        print(f"  --max-val-examples: subsampled to {len(val_examples):,}")
 
     def tokenize_one(example: dict) -> dict:
         messages = example_to_chat_messages(example)
@@ -237,7 +247,6 @@ def main() -> None:
             "grad_accum": args.grad_accum,
             "epochs": args.epochs,
             "max_seq_length": args.max_seq_length,
-            "added_special_tokens": specials,
             "seed": args.seed,
         }, f, indent=2)
 

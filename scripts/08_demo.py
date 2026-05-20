@@ -87,7 +87,6 @@ def main() -> None:
     base = AutoModelForCausalLM.from_pretrained(
         args.base_model, torch_dtype=torch.bfloat16, device_map="auto",
     )
-    base.resize_token_embeddings(len(tokenizer))
 
     print(f"Attaching LoRA adapter from {args.adapter_dir} …")
     model = PeftModel.from_pretrained(base, args.adapter_dir)
