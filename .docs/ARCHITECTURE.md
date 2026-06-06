@@ -78,3 +78,4 @@ The `.gitignore` enforces this; CI (if added) should also fail on suspicious com
 - No async / workers. Sequential, deterministic, restartable is the win.
 - No Docker for the data pipeline. Conda/venv is enough. (Training environment on rented GPU is a separate concern, scripted ad-hoc.)
 - No "framework." `transformers` + `peft` is the framework.
+- **No tokenizer vocab extension.** We do NOT add `<self>` / `<person_N>` / `<gf>` / `[media]` etc. as atomic tokens — they sub-tokenize into 3-5 pieces with Qwen's base tokenizer, which is fine. See ADR-010 in `.docs/DECISIONS.md` for the reason (random-embedding bug surfaced in the smoke run).

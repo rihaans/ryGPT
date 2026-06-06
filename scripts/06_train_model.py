@@ -29,7 +29,9 @@ def main() -> None:
     parser.add_argument("--name-mapping", type=Path,
                         default=Path("data/anonymized/name_mapping.json"))
     parser.add_argument("--out-dir", type=Path, default=Path("models/lora_adapter"))
-    parser.add_argument("--max-seq-length", type=int, default=1024)
+    # Empirical (Phase 4 + tokenization probe): mean=104 tokens, p99=170, max=661.
+    # 256 clips only 0.16% of examples and halves the padding budget vs 512.
+    parser.add_argument("--max-seq-length", type=int, default=256)
     parser.add_argument("--max-train-examples", type=int, default=0,
                         help="Cap on training examples (0 = use all). Use a small "
                              "value (e.g. 1000) for a smoke test on a small GPU.")
@@ -42,9 +44,11 @@ def main() -> None:
     parser.add_argument("--lora-dropout", type=float, default=0.05)
 
     # Optimization
+    # Defaults are tuned for a 24 GB GPU (RTX 4090 / A40). For an 8 GB laptop GPU,
+    # override with --batch-size 1 --grad-accum 16 --max-seq-length 256.
     parser.add_argument("--lr", type=float, default=2e-4)
-    parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--grad-accum", type=int, default=4)
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--grad-accum", type=int, default=1)
     parser.add_argument("--epochs", type=float, default=3.0)
     parser.add_argument("--warmup-ratio", type=float, default=0.03)
     parser.add_argument("--weight-decay", type=float, default=0.0)

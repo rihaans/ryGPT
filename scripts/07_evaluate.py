@@ -44,6 +44,7 @@ def main() -> None:
     parser.add_argument("--gen-per-relationship", type=int, default=10)
     parser.add_argument("--gen-temperature", type=float, default=0.8)
     parser.add_argument("--gen-top-p", type=float, default=0.95)
+    parser.add_argument("--gen-repetition-penalty", type=float, default=1.2)
     parser.add_argument("--gen-max-new-tokens", type=int, default=80)
     parser.add_argument("--memorization-sample", type=int, default=200)
     parser.add_argument("--memorization-jaccard-threshold", type=float, default=0.8)
@@ -176,6 +177,7 @@ def main() -> None:
                 max_new_tokens=args.gen_max_new_tokens,
                 temperature=args.gen_temperature,
                 top_p=args.gen_top_p,
+                repetition_penalty=args.gen_repetition_penalty,
                 seed=args.seed + i,
             )
             tuned_gen = generate_response(
@@ -183,6 +185,7 @@ def main() -> None:
                 max_new_tokens=args.gen_max_new_tokens,
                 temperature=args.gen_temperature,
                 top_p=args.gen_top_p,
+                repetition_penalty=args.gen_repetition_penalty,
                 seed=args.seed + i,
             )
             samples_md.append(f"### {rel}/{i}")
@@ -230,6 +233,7 @@ def main() -> None:
                 max_new_tokens=args.gen_max_new_tokens,
                 temperature=args.gen_temperature,
                 top_p=args.gen_top_p,
+                repetition_penalty=args.gen_repetition_penalty,
                 seed=args.seed + i,
             )
             for i, ex in enumerate(gen_pool, 1)
@@ -277,8 +281,9 @@ def main() -> None:
         gen = generate_response(
             tuned, tokenizer, ex,
             max_new_tokens=args.gen_max_new_tokens,
-            temperature=0.0 if False else args.gen_temperature,  # keep stochastic per plan
+            temperature=args.gen_temperature,
             top_p=args.gen_top_p,
+            repetition_penalty=args.gen_repetition_penalty,
             seed=args.seed + i,
         )
         flag = memorization_flag(

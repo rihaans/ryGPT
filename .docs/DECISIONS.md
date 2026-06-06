@@ -69,6 +69,19 @@ Lightweight ADR-style log. Each entry: *what was decided, why, what alternatives
 
 **Source:** PROJECT.md Phase 5.
 
+**Outcome (2026-05-19):** Custom BPE measured **1.41×** on targets, **1.28×** on full sequences. Below threshold → **skipped**. Base Qwen2.5 tokenizer used as-is.
+
+### ADR-010 — Don't add `<self>` / `<gf>` / `<person_N>` / `[media]` etc. as atomic tokens
+**Decision:** Let the base Qwen2.5 tokenizer fragment our project tokens naturally (`<self>` → 3 subword pieces, `<person_N>` → 5). Do NOT call `tokenizer.add_special_tokens` or `model.resize_token_embeddings` anywhere in the pipeline.
+
+**Why:** First smoke run (1000 examples, 1 epoch) produced **Thai script** at every speaker prefix. Root cause: adding 15 new tokens inserted random rows into the embedding + lm_head matrices. The LoRA config only trains attention/MLP — it does NOT train the embedding or lm_head. So the new rows stayed randomly initialized and the model emitted random nearby tokens at those positions.
+
+The alternatives were (a) `modules_to_save=["embed_tokens", "lm_head"]` which roughly doubles VRAM and was risky on a 24 GB box, or (b) smart embedding init (mean-of-existing) which still leaves the rows mostly stale. Fragmenting is the simplest path: the model just learns the multi-token sequence pattern from repetition (every example has `<self>:` at the start of the target).
+
+**How to apply:** In `scripts/06_train_model.py`, `07_evaluate.py`, `08_demo.py`, `chat.py`: do NOT modify the tokenizer or model vocab size. The chat-template formatter in `src/dataset.py` puts the tokens in as plain text and that's correct.
+
+**Forces re-decision:** if Phase 7 generations show the model consistently failing to emit the speaker prefix (rather than learning the pattern), revisit by trying `modules_to_save` with reduced batch size.
+
 ### ADR-006 — Memorization gate on demo release
 **Decision:** No demo (even local Gradio) if >5% of sampled training targets are reproduced with >80% token overlap in generations.
 

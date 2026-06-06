@@ -48,6 +48,8 @@ def main() -> None:
     parser.add_argument("--max-new-tokens", type=int, default=80)
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--top-p", type=float, default=0.95)
+    parser.add_argument("--repetition-penalty", type=float, default=1.2,
+                        help="1.0 = none, 1.2 = mild (suppresses 'Aaah Aah Aaah' loops)")
     args = parser.parse_args()
 
     # ---- Gate ----
@@ -117,6 +119,7 @@ def main() -> None:
                 do_sample=True,
                 temperature=args.temperature,
                 top_p=args.top_p,
+                repetition_penalty=args.repetition_penalty,
                 pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
             )
         new_tokens = out[0, inputs["input_ids"].shape[1]:]

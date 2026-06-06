@@ -146,6 +146,7 @@ def generate_response(
     max_new_tokens: int = 80,
     temperature: float = 0.8,
     top_p: float = 0.95,
+    repetition_penalty: float = 1.2,
     seed: int | None = None,
 ) -> str:
     """Generate a single response from a prompt-shaped example."""
@@ -169,6 +170,7 @@ def generate_response(
             do_sample=True,
             temperature=temperature,
             top_p=top_p,
+            repetition_penalty=repetition_penalty,
             pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
         )
     new_tokens = out[0, inputs["input_ids"].shape[1]:]
