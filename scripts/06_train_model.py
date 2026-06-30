@@ -103,12 +103,18 @@ def main() -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    # ---- Precision: bf16 (Ampere+) or fp16 (Turing, e.g. T4) ----
+    use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    compute_dtype = torch.bfloat16 if use_bf16 else torch.float16
+    print(f"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}; "
+          f"precision: {'bf16' if use_bf16 else 'fp16'}")
+
     # ---- Model ----
     print(f"Loading base model in 4-bit: {args.base_model}")
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_compute_dtype=compute_dtype,
         bnb_4bit_use_double_quant=True,
     )
     model = AutoModelForCausalLM.from_pretrained(
@@ -208,7 +214,8 @@ def main() -> None:
         warmup_ratio=args.warmup_ratio,
         max_grad_norm=args.max_grad_norm,
         lr_scheduler_type="cosine",
-        bf16=True,
+        bf16=use_bf16,
+        fp16=not use_bf16,
         logging_steps=args.logging_steps,
         eval_strategy="steps",
         eval_steps=args.eval_steps,

@@ -85,9 +85,11 @@ def main() -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    print(f"Loading base model: {args.base_model} …")
+    use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    load_dtype = torch.bfloat16 if use_bf16 else torch.float16
+    print(f"Loading base model: {args.base_model} ({'bf16' if use_bf16 else 'fp16'}) …")
     base = AutoModelForCausalLM.from_pretrained(
-        args.base_model, torch_dtype=torch.bfloat16, device_map="auto",
+        args.base_model, torch_dtype=load_dtype, device_map="auto",
     )
 
     print(f"Attaching LoRA adapter from {args.adapter_dir} …")

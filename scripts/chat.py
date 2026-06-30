@@ -62,8 +62,10 @@ def main() -> None:
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
+    use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    load_dtype = torch.bfloat16 if use_bf16 else torch.float16
     base = AutoModelForCausalLM.from_pretrained(
-        args.base_model, torch_dtype=torch.bfloat16, device_map="auto",
+        args.base_model, torch_dtype=load_dtype, device_map="auto",
     )
     print(f"Attaching adapter from {args.adapter_dir} …")
     model = PeftModel.from_pretrained(base, args.adapter_dir)
