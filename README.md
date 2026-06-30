@@ -5,7 +5,7 @@ A small fine-tuned language model that writes Manglish (Malayalam in Latin scrip
 > Portfolio / personal project. Trained on private WhatsApp chats. No public model release.
 
 ## Status
-Scaffolding complete. Phase 1 (parsing) not yet started.
+Data pipeline (Phases 1-5) complete locally. Smoke training succeeded. Ready for the full training run — see [.docs/TRAINING_OPTIONS.md](.docs/TRAINING_OPTIONS.md) to pick between **free Kaggle** and **paid RunPod (~$3)**.
 
 ## Quick links
 - **[PROJECT.md](PROJECT.md)** — phase-by-phase spec (source of truth for ordering and STOP points)
