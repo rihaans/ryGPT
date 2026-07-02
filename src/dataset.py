@@ -146,7 +146,8 @@ def write_jsonl(examples: Iterable[dict], path: Path) -> None:
             f.write(json.dumps(ex, ensure_ascii=False) + "\n")
 
 
-def read_jsonl(path: Path) -> list[dict]:
+def read_jsonl(path: Path | str) -> list[dict]:
+    path = Path(path)
     out: list[dict] = []
     with path.open(encoding="utf-8") as f:
         for line in f:
