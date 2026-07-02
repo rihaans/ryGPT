@@ -62,7 +62,10 @@ def main() -> None:
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
-    use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    if torch.cuda.is_available():
+        use_bf16 = torch.cuda.get_device_capability(0)[0] >= 8
+    else:
+        use_bf16 = False
     load_dtype = torch.bfloat16 if use_bf16 else torch.float16
     base = AutoModelForCausalLM.from_pretrained(
         args.base_model, torch_dtype=load_dtype, device_map="auto",

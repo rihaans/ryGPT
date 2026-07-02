@@ -74,7 +74,7 @@ def main() -> None:
             AutoModelForCausalLM,
             AutoTokenizer,
             BitsAndBytesConfig,
-            DataCollatorForLanguageModeling,
+            DataCollatorForSeq2Seq,
             EarlyStoppingCallback,
             Trainer,
             TrainingArguments,
@@ -103,11 +103,18 @@ def main() -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # ---- Precision: bf16 (Ampere+) or fp16 (Turing, e.g. T4) ----
-    use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    # ---- Precision: bf16 (Ampere ≥ 8.0) or fp16 (Turing, e.g. T4) ----
+    # torch.cuda.is_bf16_supported() returns True on T4 via software emulation on
+    # newer PyTorch — misleading, so we check compute capability directly.
+    if torch.cuda.is_available():
+        cap_major, _ = torch.cuda.get_device_capability(0)
+        use_bf16 = cap_major >= 8
+        gpu_name = torch.cuda.get_device_name(0)
+    else:
+        use_bf16 = False
+        gpu_name = "CPU"
     compute_dtype = torch.bfloat16 if use_bf16 else torch.float16
-    print(f"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}; "
-          f"precision: {'bf16' if use_bf16 else 'fp16'}")
+    print(f"GPU: {gpu_name}; precision: {'bf16' if use_bf16 else 'fp16'}")
 
     # ---- Model ----
     print(f"Loading base model in 4-bit: {args.base_model}")
@@ -232,8 +239,14 @@ def main() -> None:
         run_name=f"qlora-{args.base_model.split('/')[-1]}",
     )
 
-    data_collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer, mlm=False,
+    # DataCollatorForSeq2Seq correctly pads input_ids/attention_mask AND labels
+    # (padding labels with -100). DataCollatorForLanguageModeling would either
+    # overwrite our masked labels (SFT-style) or fail to pad them at all.
+    data_collator = DataCollatorForSeq2Seq(
+        tokenizer=tokenizer,
+        padding="longest",
+        label_pad_token_id=-100,
+        return_tensors="pt",
     )
     callbacks = [EarlyStoppingCallback(early_stopping_patience=args.early_stopping_patience)]
 

@@ -93,7 +93,11 @@ def main() -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+    # Use compute capability, not is_bf16_supported() (which lies for T4).
+    if torch.cuda.is_available():
+        use_bf16 = torch.cuda.get_device_capability(0)[0] >= 8
+    else:
+        use_bf16 = False
     load_dtype = torch.bfloat16 if use_bf16 else torch.float16
     print(f"Precision: {'bf16' if use_bf16 else 'fp16'}")
 

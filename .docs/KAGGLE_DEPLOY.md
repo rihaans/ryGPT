@@ -1,8 +1,25 @@
 # Kaggle deployment — full training run (free)
 
-Procedure for training on Kaggle's free GPU tier (2× T4 15 GB). Cost: **$0**. Expected wall time: **5-8 hours** for the full 3-epoch run. We use a **single T4** — multi-GPU adds complexity and only ~1.6× speedup due to communication overhead on small models.
+Procedure for training on Kaggle's free GPU tier (2× T4 15 GB). Cost: **$0**. Expected wall time: **5-8 hours** for the full run. We use a **single T4** — multi-GPU adds complexity and only ~1.6× speedup due to communication overhead on small models.
 
-> **About bf16:** T4 (Turing, 2018) does not support bf16. The training script auto-detects this and uses fp16 instead — no code change needed.
+> **About bf16:** T4 (Turing, 2018) does not support bf16 natively. The training script checks the GPU's compute capability (Ampere ≥ 8.0) and falls back to fp16 on T4 automatically. No code change needed.
+
+## 🚀 Fastest path: use the prebuilt notebook
+
+The repo ships a ready-to-upload Kaggle notebook at [`kaggle/ryGPT_train.ipynb`](../kaggle/ryGPT_train.ipynb). It has all the cells wired up, with checks for common failure modes (internet off, dataset missing, wrong dataset slug).
+
+**Steps:**
+
+1. Upload your data as a private Kaggle dataset (see section below)
+2. Create a new Kaggle notebook → **File → Import Notebook** → upload `kaggle/ryGPT_train.ipynb`
+3. In notebook settings: **GPU T4 ×1** + **Internet On** + **Add Data → rygpt-data**
+4. Click **Run All**
+
+Skip the manual step-by-step below unless you want to understand each cell.
+
+---
+
+## Manual walkthrough (equivalent to the notebook, for reference)
 
 ## 1. Pre-flight (do this locally first)
 
