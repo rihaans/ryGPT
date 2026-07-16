@@ -18,7 +18,17 @@ import _bootstrap  # noqa: F401
 
 import argparse
 import json
+import os
 from pathlib import Path
+
+# Loading a quantized (4-bit) model with a per-process single-device device_map
+# (device_map={"": local_rank}, used below for multi-GPU DDP) makes transformers
+# expand that into one hf_device_map entry *per submodule* — all pointing at the
+# same device, but accelerate's verify_device_map() only counts dict entries, so
+# it mistakes this for `device_map="auto"` naive model-parallelism and refuses to
+# wrap the model in DDP. This is accelerate's own documented escape hatch for
+# exactly this case. Must be set before Trainer builds its Accelerator.
+os.environ.setdefault("ACCELERATE_BYPASS_DEVICE_MAP", "true")
 
 
 def main() -> None:
@@ -68,6 +78,7 @@ def main() -> None:
     # Imports are local so the script remains importable without GPU deps installed.
     try:
         import torch
+        from accelerate import PartialState
         from datasets import Dataset
         from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
         from transformers import (
@@ -79,6 +90,7 @@ def main() -> None:
             Trainer,
             TrainingArguments,
         )
+        from transformers.trainer_utils import get_last_checkpoint
     except ImportError as e:
         raise SystemExit(
             f"Missing GPU training deps ({e.name}). On the training box run:\n"
@@ -117,6 +129,13 @@ def main() -> None:
     print(f"GPU: {gpu_name}; precision: {'bf16' if use_bf16 else 'fp16'}")
 
     # ---- Model ----
+    # device_map="auto" would split the model's layers *across* GPUs (naive
+    # model parallelism) — only one GPU computes at a time, the rest sit idle.
+    # For multi-GPU we instead want data parallelism: a full model copy per
+    # process, each chewing through a different batch concurrently. When
+    # launched via `accelerate launch --multi_gpu`, PartialState().process_index
+    # gives each process its own GPU index; under a single process it's just 0.
+    device_map = {"": PartialState().process_index}
     print(f"Loading base model in 4-bit: {args.base_model}")
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -127,7 +146,7 @@ def main() -> None:
     model = AutoModelForCausalLM.from_pretrained(
         args.base_model,
         quantization_config=bnb_config,
-        device_map="auto",
+        device_map=device_map,
         trust_remote_code=False,
     )
     model = prepare_model_for_kbit_training(model)
@@ -235,6 +254,7 @@ def main() -> None:
         seed=args.seed,
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
+        ddp_find_unused_parameters=False,
         report_to=report_to,
         run_name=f"qlora-{args.base_model.split('/')[-1]}",
     )
@@ -274,8 +294,15 @@ def main() -> None:
             "seed": args.seed,
         }, f, indent=2)
 
-    print("\nStarting training …")
-    trainer.train()
+    # Resume automatically if out_dir already has a checkpoint (e.g. a prior
+    # Kaggle session that ran out of time). Training args, LoRA config, and
+    # seed must match the original run for this to resume cleanly.
+    last_checkpoint = get_last_checkpoint(str(args.out_dir)) if args.out_dir.exists() else None
+    if last_checkpoint:
+        print(f"\nFound existing checkpoint — resuming from: {last_checkpoint}")
+    else:
+        print("\nStarting training …")
+    trainer.train(resume_from_checkpoint=last_checkpoint)
     trainer.save_model(str(args.out_dir))
     tokenizer.save_pretrained(args.out_dir)
     print(f"\nSaved adapter + tokenizer to {args.out_dir}")
