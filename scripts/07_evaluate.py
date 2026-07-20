@@ -50,12 +50,18 @@ def main() -> None:
     parser.add_argument("--memorization-jaccard-threshold", type=float, default=0.8)
     parser.add_argument("--memorization-lcs-threshold", type=float, default=0.8)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--load-4bit", action="store_true",
+                        help="Load base + tuned in 4-bit (nf4). Required for 7B on a "
+                             "single 16GB GPU — two fp16 7B copies would need ~30GB.")
+    parser.add_argument("--skip-base", action="store_true",
+                        help="Skip the untuned-base perplexity/generation comparison "
+                             "(loads only the tuned model — halves memory and runtime).")
     args = parser.parse_args()
 
     try:
         import torch
         from peft import PeftModel
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
     except ImportError as e:
         raise SystemExit(
             f"Missing deps ({e.name}). Install training stack on the eval box first."
@@ -99,20 +105,36 @@ def main() -> None:
     else:
         use_bf16 = False
     load_dtype = torch.bfloat16 if use_bf16 else torch.float16
-    print(f"Precision: {'bf16' if use_bf16 else 'fp16'}")
+    print(f"Precision: {'bf16' if use_bf16 else 'fp16'}"
+          f"{' (4-bit nf4 weights)' if args.load_4bit else ''}")
 
-    print("Loading base model …")
-    base = AutoModelForCausalLM.from_pretrained(
-        args.base_model, torch_dtype=load_dtype, device_map="auto",
-    )
+    quant_config = None
+    if args.load_4bit:
+        quant_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=load_dtype,
+            bnb_4bit_use_double_quant=True,
+        )
 
-    print("Loading base model (separate copy) for adapter attach …")
-    base_for_lora = AutoModelForCausalLM.from_pretrained(
-        args.base_model, torch_dtype=load_dtype, device_map="auto",
-    )
-    tuned = PeftModel.from_pretrained(base_for_lora, args.adapter_dir)
+    def load_base():
+        return AutoModelForCausalLM.from_pretrained(
+            args.base_model, torch_dtype=load_dtype, device_map="auto",
+            quantization_config=quant_config,
+        )
+
+    # The untuned base is only needed for the before/after comparison. For 7B
+    # (or any --skip-base run) we skip it: loading a second full copy is the
+    # memory bottleneck, and the tuned model alone answers "is it usable."
+    base = None
+    if not args.skip_base:
+        print("Loading base model (untuned, for comparison) …")
+        base = load_base()
+        base.eval()
+
+    print("Loading base model + adapter (tuned) …")
+    tuned = PeftModel.from_pretrained(load_base(), args.adapter_dir)
     tuned.eval()
-    base.eval()
 
     # ---- Data ----
     val = read_jsonl(args.val_file)
@@ -122,10 +144,11 @@ def main() -> None:
     else:
         ppl_subset = val
 
-    # ---- 1. Perplexity (base vs tuned) ----
+    # ---- 1. Perplexity (tuned, and base if loaded) ----
     print(f"\nPerplexity on {len(ppl_subset):,} val examples …")
-    ppl_base = compute_perplexity(
-        base, tokenizer, ppl_subset, max_seq_length=args.max_seq_length,
+    ppl_base = (
+        compute_perplexity(base, tokenizer, ppl_subset, max_seq_length=args.max_seq_length)
+        if base is not None else {}
     )
     ppl_tuned = compute_perplexity(
         tuned, tokenizer, ppl_subset, max_seq_length=args.max_seq_length,
@@ -137,20 +160,27 @@ def main() -> None:
         f"_Generated: {datetime.now().isoformat(timespec='seconds')}_",
         f"_Sample size: {len(ppl_subset):,} val examples_",
         "",
-        "| slice | base | tuned | Δ |",
-        "|-------|-----:|------:|--:|",
     ]
-    for slice_name in ["overall"] + sorted([k for k in ppl_tuned if k != "overall"]):
-        b = ppl_base.get(slice_name, {}).get("perplexity", float("nan"))
-        t = ppl_tuned.get(slice_name, {}).get("perplexity", float("nan"))
-        delta = (t - b) / b * 100 if b and not math.isnan(b) else float("nan")
-        ppl_md.append(f"| {slice_name} | {b:.2f} | {t:.2f} | {delta:+.1f}% |")
-    ppl_md += [
-        "",
-        "_Pass criterion (EVAL_PLAN.md): tuned ≥ 25% lower than base on overall, "
-        "no relationship slice worse than base._",
-        "",
-    ]
+    if base is not None:
+        ppl_md += ["| slice | base | tuned | Δ |", "|-------|-----:|------:|--:|"]
+        for slice_name in ["overall"] + sorted([k for k in ppl_tuned if k != "overall"]):
+            b = ppl_base.get(slice_name, {}).get("perplexity", float("nan"))
+            t = ppl_tuned.get(slice_name, {}).get("perplexity", float("nan"))
+            delta = (t - b) / b * 100 if b and not math.isnan(b) else float("nan")
+            ppl_md.append(f"| {slice_name} | {b:.2f} | {t:.2f} | {delta:+.1f}% |")
+        ppl_md += [
+            "",
+            "_Pass criterion (EVAL_PLAN.md): tuned ≥ 25% lower than base on overall, "
+            "no relationship slice worse than base._",
+            "",
+        ]
+    else:
+        ppl_md += ["_(--skip-base: untuned comparison omitted)_", "",
+                   "| slice | tuned |", "|-------|------:|"]
+        for slice_name in ["overall"] + sorted([k for k in ppl_tuned if k != "overall"]):
+            t = ppl_tuned.get(slice_name, {}).get("perplexity", float("nan"))
+            ppl_md.append(f"| {slice_name} | {t:.2f} |")
+        ppl_md.append("")
     (args.out_dir / "perplexity.md").write_text("\n".join(ppl_md), encoding="utf-8")
     print("  -> eval/perplexity.md")
 
@@ -180,14 +210,6 @@ def main() -> None:
         samples_md.append(f"## {rel}")
         samples_md.append("")
         for i, (r, ex) in enumerate([t for t in chosen_examples if t[0] == rel], 1):
-            base_gen = generate_response(
-                base, tokenizer, ex,
-                max_new_tokens=args.gen_max_new_tokens,
-                temperature=args.gen_temperature,
-                top_p=args.gen_top_p,
-                repetition_penalty=args.gen_repetition_penalty,
-                seed=args.seed + i,
-            )
             tuned_gen = generate_response(
                 tuned, tokenizer, ex,
                 max_new_tokens=args.gen_max_new_tokens,
@@ -196,6 +218,14 @@ def main() -> None:
                 repetition_penalty=args.gen_repetition_penalty,
                 seed=args.seed + i,
             )
+            base_gen = generate_response(
+                base, tokenizer, ex,
+                max_new_tokens=args.gen_max_new_tokens,
+                temperature=args.gen_temperature,
+                top_p=args.gen_top_p,
+                repetition_penalty=args.gen_repetition_penalty,
+                seed=args.seed + i,
+            ) if base is not None else None
             samples_md.append(f"### {rel}/{i}")
             samples_md.append("")
             samples_md.append("**Context:**")
@@ -204,8 +234,9 @@ def main() -> None:
             samples_md.append("")
             samples_md.append(f"**Ground truth target:** {ex['target']}")
             samples_md.append("")
-            samples_md.append(f"**BASE  →** {base_gen}")
-            samples_md.append("")
+            if base_gen is not None:
+                samples_md.append(f"**BASE  →** {base_gen}")
+                samples_md.append("")
             samples_md.append(f"**TUNED →** {tuned_gen}")
             samples_md.append("")
             samples_md.append("`me: ` (yes/no/maybe — fill in manually)")

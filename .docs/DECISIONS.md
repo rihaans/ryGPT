@@ -55,6 +55,22 @@ Lightweight ADR-style log. Each entry: *what was decided, why, what alternatives
 
 ## Decided
 
+### ADR-011 — Switch to Qwen2.5-7B-Instruct for the v2 run (decided 2026-07-20)
+**Decision:** Retrain on **`Qwen/Qwen2.5-7B-Instruct`** instead of the base `Qwen/Qwen2.5-1.5B`. New self-contained trainer `scripts/train_7b.py`, new notebook `kaggle/ryGPT_train_7b.ipynb`, adapter written to `models/lora_adapter_7b/`. Same dataset and example format — no data changes.
+
+**Why (two independent reasons):**
+1. **Fixes the "never stops" failure at the source.** The base 1.5B checkpoint has no pretraining exposure to conversation turns that *end*; its prior is "text keeps going." A rank-16 LoRA over 2 epochs could not override that — direct logit inspection showed `<|im_end|>` probability stayed ~0.0004 right where a reply should end, at every checkpoint (including the last), in both fp16 and 4-bit inference. Generations ran to the token cap and drifted into foreign-script noise. The **Instruct** variant is chat-tuned: its `generation_config.json` already lists `<|im_end|>` (151645) as a stop id, and it was trained to emit it after every turn. So it stops on its own — the whole class of "never stops" bugs disappears rather than being patched at inference (the structural-stopping / bad-words-ban / lowered-max-tokens workarounds in `src/eval.py` stay as belt-and-suspenders but should rarely fire).
+2. **Coherence.** 1.5B replies were often locally-styled but semantically thin — the remaining quality complaint. 7B has materially more capacity for contextual reasoning, which is the actual lever (perplexity was already excellent and is not the bottleneck).
+
+**Alternatives rejected:**
+- **Patch the 1.5B base further** (higher rank, `modules_to_save=["embed_tokens","lm_head"]`, more epochs): more GPU for a smaller ceiling, and doesn't address coherence.
+- **3B-Instruct:** the sweet spot for training time, but the user prioritized reply quality over turnaround.
+- **Keep base, rely on inference workarounds:** they suppress the *symptom* (garbage tail) but the model still doesn't know when it's done — brittle, and leaves coherence untouched.
+
+**Cost accepted:** 7B is ~4-5x the FLOPs/step of 1.5B. Even at 1 epoch (`train_7b.py` default — the 1.5B eval_loss bottomed near epoch 1.5, so >1 epoch overfits) this is several Kaggle sessions. `train_7b.py` + notebook §6b handle cross-session checkpoint/resume; `save_steps=1000` caps lost work on a crash.
+
+**Forces re-decision:** if 7B won't fit the T4 memory budget even at `--batch-size 1 --grad-accum 16`, fall back to 3B-Instruct (same script, `--base-model Qwen/Qwen2.5-3B-Instruct`). If eval_loss is still falling at the end of epoch 1, bump to 2.
+
 ### ADR-009 — Class imbalance across relationships (decided 2026-05-18)
 **Decision:** Train on the full dataset as-is. No downsampling, no stratification, no per-relationship loss weighting. Accept that ~97% of messages are from the Fay chat (`<gf>`).
 

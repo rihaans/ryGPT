@@ -6,6 +6,7 @@ data/processed/
 data/**/name_mapping.json
 models/
 *.zip
+*.tar.gz
 *_chat.txt
 
 # --- Eval outputs that may contain generations or samples ---
