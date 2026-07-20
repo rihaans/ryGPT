@@ -66,18 +66,29 @@ def main() -> None:
         tok.pad_token = tok.eos_token
     stop_ids = chat_stop_token_ids(tok)
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if torch.cuda.is_available():
         use_bf16 = torch.cuda.get_device_capability(0)[0] >= 8
+        load_dtype = torch.bfloat16 if use_bf16 else torch.float16
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
     else:
-        use_bf16 = False
-    load_dtype = torch.bfloat16 if use_bf16 else torch.float16
+        # fp16/bf16 on CPU is unsupported for many ops and often slower than
+        # fp32 anyway (CPUs lack fast half-precision kernels) — use fp32.
+        load_dtype = torch.float32
+        print("No GPU detected — running on CPU in fp32 (will be slow, "
+              "but a 1.5B model is usable — expect maybe 10-30s per reply).")
+    # No device_map here: that's for models too large for one GPU. This 1.5B
+    # model fits comfortably on any modern GPU — device_map="auto" was
+    # sometimes offloading layers to CPU/disk as meta tensors, which silently
+    # makes the LoRA adapter load into placeholder tensors and never actually
+    # apply (a no-op copy), so the "tuned" model was actually just the base
+    # model. Loading directly onto one device avoids that entirely.
     base = AutoModelForCausalLM.from_pretrained(
-        args.base_model, torch_dtype=load_dtype, device_map="auto",
-    )
+        args.base_model, torch_dtype=load_dtype,
+    ).to(device)
     print(f"Attaching adapter from {args.adapter_dir} …")
-    model = PeftModel.from_pretrained(base, args.adapter_dir)
+    model = PeftModel.from_pretrained(base, args.adapter_dir).to(device)
     model.eval()
-    device = next(model.parameters()).device
 
     print()
     print("=" * 60)
