@@ -80,7 +80,7 @@ def main() -> None:
             args.base_model = json.load(f)["base_model"]
 
     from src.dataset import chat_stop_token_ids
-    from src.eval import structural_stopping_criteria
+    from src.eval import manglish_bad_word_ids, structural_stopping_criteria
 
     # ---- Load ----
     print(f"Loading tokenizer from {args.adapter_dir} …")
@@ -88,6 +88,8 @@ def main() -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     stop_ids = chat_stop_token_ids(tokenizer)
+    print("Building banned-script token list (one-time, scans the vocab) …")
+    bad_word_ids = manglish_bad_word_ids(tokenizer)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if torch.cuda.is_available():
@@ -145,6 +147,7 @@ def main() -> None:
                 pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
                 eos_token_id=stop_ids,
                 stopping_criteria=structural_stopping_criteria(tokenizer, prompt_len),
+                bad_words_ids=bad_word_ids,
             )
         new_tokens = out[0, prompt_len:]
         text = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()

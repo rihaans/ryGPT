@@ -169,6 +169,62 @@ def structural_stopping_criteria(tokenizer, prompt_len: int):
     return StoppingCriteriaList([_StopOnStructuralCues()])
 
 
+# Unicode blocks that never legitimately appear in Manglish (Malayalam
+# written in Latin script) — if the model ever emits one of these, it's
+# always a mistake, not a stylistic choice. Covers every script actually
+# observed leaking into generations, plus a few defensive neighbors.
+_BAD_SCRIPT_RANGES = [
+    (0x0370, 0x03FF),  # Greek
+    (0x0400, 0x04FF),  # Cyrillic
+    (0x0530, 0x058F),  # Armenian
+    (0x0590, 0x05FF),  # Hebrew
+    (0x0600, 0x06FF),  # Arabic
+    (0x0900, 0x097F),  # Devanagari
+    (0x0D00, 0x0D7F),  # Malayalam native script (Manglish is Latin-script by definition)
+    (0x0E00, 0x0E7F),  # Thai
+    (0x10A0, 0x10FF),  # Georgian
+    (0x1100, 0x11FF),  # Hangul Jamo
+    (0x3040, 0x30FF),  # Hiragana / Katakana
+    (0x3400, 0x4DBF),  # CJK extension A
+    (0x4E00, 0x9FFF),  # CJK unified ideographs
+    (0xAC00, 0xD7AF),  # Hangul syllables
+    (0xF900, 0xFAFF),  # CJK compatibility ideographs
+]
+
+_bad_word_ids_cache: dict[int, list[list[int]]] = {}
+
+
+def manglish_bad_word_ids(tokenizer) -> list[list[int]]:
+    """Token ids to ban outright: any token whose decoded text contains a
+    character from a script that never belongs in this dataset (see
+    _BAD_SCRIPT_RANGES). The base model's ~152k-token multilingual vocab
+    otherwise leaks these in — the model's stop signal is unreliable (see
+    structural_stopping_criteria's docstring), and by the time a newline
+    finally ends generation, one stray off-script token can already have
+    slipped out right where the reply should have ended. Banning them
+    outright is more robust than only reacting after the fact.
+
+    Computed once per tokenizer (scans the whole vocab) and cached by
+    identity — cheap on every call after the first.
+    """
+    cache_key = id(tokenizer)
+    if cache_key in _bad_word_ids_cache:
+        return _bad_word_ids_cache[cache_key]
+
+    vocab_size = len(tokenizer)
+    pieces = tokenizer.convert_ids_to_tokens(list(range(vocab_size)))
+    bad_ids = []
+    for token_id, piece in enumerate(pieces):
+        if piece is None:
+            continue
+        text = tokenizer.convert_tokens_to_string([piece])
+        if any(lo <= ord(ch) <= hi for ch in text for lo, hi in _BAD_SCRIPT_RANGES):
+            bad_ids.append([token_id])
+
+    _bad_word_ids_cache[cache_key] = bad_ids
+    return bad_ids
+
+
 def generate_response(
     model,
     tokenizer,
@@ -205,6 +261,7 @@ def generate_response(
             pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
             eos_token_id=chat_stop_token_ids(tokenizer),
             stopping_criteria=structural_stopping_criteria(tokenizer, prompt_len),
+            bad_words_ids=manglish_bad_word_ids(tokenizer),
         )
     new_tokens = out[0, prompt_len:]
     return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
