@@ -139,11 +139,41 @@ def compute_perplexity(
 
 # ---------- Generation ----------
 
+def structural_stopping_criteria(tokenizer, prompt_len: int):
+    """Stop generation on structural cues instead of relying on `<|im_end|>`.
+
+    The base (non-instruct) Qwen2.5-1.5B checkpoint never learned a reliable
+    stop signal from LoRA fine-tuning alone (see .docs/DECISIONS.md — a
+    rank-16 adapter over 2 epochs wasn't enough capacity to override the base
+    model's "text keeps going" prior, confirmed via direct logit inspection:
+    `<|im_end|>` probability stayed near-zero at every checkpoint tested).
+    Every training target in this dataset is a single short line, so we
+    truncate generation at the first newline, or — as a backstop for garbage
+    that drifts without a newline — once a second speaker marker
+    (`<self>:` / `<person_N>:`) appears, which signals the model has started
+    hallucinating a new turn rather than finishing its own.
+    """
+    import re
+
+    from transformers import StoppingCriteria, StoppingCriteriaList
+
+    speaker_marker_re = re.compile(r"<self>:|<person_\d+>:")
+
+    class _StopOnStructuralCues(StoppingCriteria):
+        def __call__(self, input_ids, scores, **kwargs) -> bool:
+            text = tokenizer.decode(input_ids[0, prompt_len:], skip_special_tokens=True)
+            if "\n" in text:
+                return True
+            return len(speaker_marker_re.findall(text)) >= 2
+
+    return StoppingCriteriaList([_StopOnStructuralCues()])
+
+
 def generate_response(
     model,
     tokenizer,
     example: dict,
-    max_new_tokens: int = 80,
+    max_new_tokens: int = 40,
     temperature: float = 0.8,
     top_p: float = 0.95,
     repetition_penalty: float = 1.2,
@@ -163,6 +193,7 @@ def generate_response(
     inputs = tokenizer(prompt, return_tensors="pt", add_special_tokens=False).to(
         next(model.parameters()).device
     )
+    prompt_len = inputs["input_ids"].shape[1]
     with torch.no_grad():
         out = model.generate(
             **inputs,
@@ -173,8 +204,9 @@ def generate_response(
             repetition_penalty=repetition_penalty,
             pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
             eos_token_id=chat_stop_token_ids(tokenizer),
+            stopping_criteria=structural_stopping_criteria(tokenizer, prompt_len),
         )
-    new_tokens = out[0, inputs["input_ids"].shape[1]:]
+    new_tokens = out[0, prompt_len:]
     return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
 

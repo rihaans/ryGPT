@@ -45,7 +45,7 @@ def main() -> None:
     parser.add_argument("--gen-temperature", type=float, default=0.8)
     parser.add_argument("--gen-top-p", type=float, default=0.95)
     parser.add_argument("--gen-repetition-penalty", type=float, default=1.2)
-    parser.add_argument("--gen-max-new-tokens", type=int, default=80)
+    parser.add_argument("--gen-max-new-tokens", type=int, default=40)
     parser.add_argument("--memorization-sample", type=int, default=200)
     parser.add_argument("--memorization-jaccard-threshold", type=float, default=0.8)
     parser.add_argument("--memorization-lcs-threshold", type=float, default=0.8)

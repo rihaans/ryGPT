@@ -45,7 +45,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=7860)
     parser.add_argument("--skip-gate", action="store_true",
                         help="Bypass the memorization-audit gate (NOT RECOMMENDED).")
-    parser.add_argument("--max-new-tokens", type=int, default=80)
+    parser.add_argument("--max-new-tokens", type=int, default=40)
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--repetition-penalty", type=float, default=1.2,
@@ -80,6 +80,7 @@ def main() -> None:
             args.base_model = json.load(f)["base_model"]
 
     from src.dataset import chat_stop_token_ids
+    from src.eval import structural_stopping_criteria
 
     # ---- Load ----
     print(f"Loading tokenizer from {args.adapter_dir} …")
@@ -120,6 +121,7 @@ def main() -> None:
         inputs = tokenizer(prompt, return_tensors="pt", add_special_tokens=False).to(
             next(model.parameters()).device
         )
+        prompt_len = inputs["input_ids"].shape[1]
         with torch.no_grad():
             out = model.generate(
                 **inputs,
@@ -130,8 +132,9 @@ def main() -> None:
                 repetition_penalty=args.repetition_penalty,
                 pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
                 eos_token_id=stop_ids,
+                stopping_criteria=structural_stopping_criteria(tokenizer, prompt_len),
             )
-        new_tokens = out[0, inputs["input_ids"].shape[1]:]
+        new_tokens = out[0, prompt_len:]
         text = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
         # Strip any leading speaker prefix the model emits.
         if text.lower().startswith(f"{SELF.lower()}:"):

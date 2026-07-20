@@ -30,7 +30,7 @@ def main() -> None:
     p.add_argument("--relationship", choices=["gf", "friend", "group"], default="gf")
     p.add_argument("--other-speaker", default="<person_3>",
                    help="Token for the other person you're chatting as (e.g. <person_3>)")
-    p.add_argument("--max-new-tokens", type=int, default=60)
+    p.add_argument("--max-new-tokens", type=int, default=40)
     p.add_argument("--temperature", type=float, default=0.8)
     p.add_argument("--top-p", type=float, default=0.95)
     p.add_argument("--repetition-penalty", type=float, default=1.2,
@@ -58,6 +58,7 @@ def main() -> None:
         args.base_model = json.loads(cfg_path.read_text(encoding="utf-8"))["base_model"]
 
     from src.dataset import chat_stop_token_ids
+    from src.eval import structural_stopping_criteria
 
     print(f"Loading tokenizer + base model ({args.base_model}) …")
     tok = AutoTokenizer.from_pretrained(args.adapter_dir, use_fast=True)
@@ -110,6 +111,7 @@ def main() -> None:
             messages, tokenize=False, add_generation_prompt=True,
         )
         inputs = tok(prompt, return_tensors="pt", add_special_tokens=False).to(device)
+        prompt_len = inputs["input_ids"].shape[1]
         with torch.no_grad():
             out = model.generate(
                 **inputs,
@@ -120,8 +122,9 @@ def main() -> None:
                 repetition_penalty=args.repetition_penalty,
                 pad_token_id=tok.pad_token_id or tok.eos_token_id,
                 eos_token_id=stop_ids,
+                stopping_criteria=structural_stopping_criteria(tok, prompt_len),
             )
-        new_tokens = out[0, inputs["input_ids"].shape[1]:]
+        new_tokens = out[0, prompt_len:]
         text = tok.decode(new_tokens, skip_special_tokens=True).strip()
         # Strip leading "<self>:" speaker prefix the model emits
         for prefix in ("<self>:", "<self> :", "<self>"):
