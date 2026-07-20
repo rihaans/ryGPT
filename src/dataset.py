@@ -205,3 +205,24 @@ def example_to_prompt_messages(example: dict) -> list[dict]:
     will produce the prompt the model should continue.
     """
     return example_to_chat_messages(example)[:-1]
+
+
+def chat_stop_token_ids(tokenizer) -> list[int]:
+    """EOS ids that should stop `model.generate()` for chat-template text.
+
+    Qwen2.5's chat template terminates every turn with `<|im_end|>`, and
+    training labels include that token (it's part of the target text), so the
+    model learns to emit it right after a reply. But the base checkpoint's
+    generation_config.json only lists `<|endoftext|>` as eos_token_id — it does
+    NOT know `<|im_end|>` means "stop". Without passing this explicitly,
+    generate() ignores `<|im_end|>` and keeps sampling past it for the full
+    max_new_tokens budget, producing unconditioned filler that (on Qwen's
+    ~152k-token multilingual vocab) surfaces as random foreign-script noise.
+    """
+    ids = set()
+    if tokenizer.eos_token_id is not None:
+        ids.add(tokenizer.eos_token_id)
+    im_end_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
+    if im_end_id is not None and im_end_id != tokenizer.unk_token_id:
+        ids.add(im_end_id)
+    return sorted(ids)

@@ -79,11 +79,14 @@ def main() -> None:
         with cfg_path.open(encoding="utf-8") as f:
             args.base_model = json.load(f)["base_model"]
 
+    from src.dataset import chat_stop_token_ids
+
     # ---- Load ----
     print(f"Loading tokenizer from {args.adapter_dir} …")
     tokenizer = AutoTokenizer.from_pretrained(args.adapter_dir, use_fast=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    stop_ids = chat_stop_token_ids(tokenizer)
 
     if torch.cuda.is_available():
         use_bf16 = torch.cuda.get_device_capability(0)[0] >= 8
@@ -126,6 +129,7 @@ def main() -> None:
                 top_p=args.top_p,
                 repetition_penalty=args.repetition_penalty,
                 pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+                eos_token_id=stop_ids,
             )
         new_tokens = out[0, inputs["input_ids"].shape[1]:]
         text = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()

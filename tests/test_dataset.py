@@ -8,6 +8,7 @@ import pytest
 from src.dataset import (
     build_examples_from_chat,
     build_examples_from_session,
+    chat_stop_token_ids,
     detect_relationship,
     example_to_chat_messages,
     example_to_prompt_messages,
@@ -349,6 +350,36 @@ def test_prompt_messages_omits_final_assistant():
     prompt = example_to_prompt_messages(ex)
     assert prompt == full[:-1]
     assert prompt[-1]["role"] == "user"
+
+
+# ----- Generation stop tokens -----
+
+class _FakeTokenizer:
+    """Minimal stand-in for a HF tokenizer's id/token surface."""
+
+    def __init__(self, eos_token_id, im_end_id, unk_token_id=0):
+        self.eos_token_id = eos_token_id
+        self._im_end_id = im_end_id
+        self.unk_token_id = unk_token_id
+
+    def convert_tokens_to_ids(self, token: str):
+        return self._im_end_id if token == "<|im_end|>" else self.unk_token_id
+
+
+def test_chat_stop_token_ids_includes_eos_and_im_end():
+    tok = _FakeTokenizer(eos_token_id=151643, im_end_id=151645)
+    assert chat_stop_token_ids(tok) == [151643, 151645]
+
+
+def test_chat_stop_token_ids_dedupes_when_equal():
+    tok = _FakeTokenizer(eos_token_id=151645, im_end_id=151645)
+    assert chat_stop_token_ids(tok) == [151645]
+
+
+def test_chat_stop_token_ids_skips_im_end_when_unknown():
+    # Tokenizer has no <|im_end|> token — convert_tokens_to_ids falls back to unk.
+    tok = _FakeTokenizer(eos_token_id=151643, im_end_id=0, unk_token_id=0)
+    assert chat_stop_token_ids(tok) == [151643]
 
 
 def test_jsonl_handles_unicode(tmp_path: Path):

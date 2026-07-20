@@ -151,7 +151,7 @@ def generate_response(
 ) -> str:
     """Generate a single response from a prompt-shaped example."""
     import torch
-    from src.dataset import example_to_prompt_messages
+    from src.dataset import chat_stop_token_ids, example_to_prompt_messages
 
     if seed is not None:
         torch.manual_seed(seed)
@@ -172,6 +172,7 @@ def generate_response(
             top_p=top_p,
             repetition_penalty=repetition_penalty,
             pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+            eos_token_id=chat_stop_token_ids(tokenizer),
         )
     new_tokens = out[0, inputs["input_ids"].shape[1]:]
     return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
