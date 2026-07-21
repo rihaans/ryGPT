@@ -229,6 +229,20 @@ def main() -> None:
     # ---- Trainer ----
     args.out_dir.mkdir(parents=True, exist_ok=True)
     report_to = "wandb" if not args.wandb_disabled else "none"
+
+    # load_best_model_at_end requires save_steps to be a multiple of eval_steps.
+    # To allow "eval rarely, checkpoint often" (e.g. eval 3000 / save 1000 —
+    # fewer expensive eval passes, but a tighter crash-safety net on a
+    # multi-session run), auto-disable best-model reload when the pair doesn't
+    # satisfy that constraint. At 1 epoch there's little mid-run overfitting,
+    # so the final checkpoint is what you want anyway.
+    load_best = args.save_steps % args.eval_steps == 0
+    if not load_best:
+        log(f"  eval-steps={args.eval_steps}, save-steps={args.save_steps}: "
+            "save is not a multiple of eval, so load_best_model_at_end is OFF "
+            "(final = last checkpoint, not lowest-eval-loss). This is fine for "
+            "a 1-epoch run.")
+
     training_args = TrainingArguments(
         output_dir=str(args.out_dir),
         num_train_epochs=args.epochs,
@@ -248,7 +262,7 @@ def main() -> None:
         save_strategy="steps",
         save_steps=args.save_steps,
         save_total_limit=args.save_total_limit,
-        load_best_model_at_end=True,
+        load_best_model_at_end=load_best,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
         seed=args.seed,
